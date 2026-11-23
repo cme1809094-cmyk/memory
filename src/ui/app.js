@@ -42,6 +42,7 @@ const iconAction = (name, text, glyph, style = '', data = '') =>
 let toastTimer;
 let listRequest = 0;
 let detailRequest = 0;
+let selecting = false;
 let renderVersion = 0;
 let loaded = false;
 let dialogOrigin;
@@ -211,11 +212,19 @@ function renderDetail() {
   const oldScroll = $('.detail-scroll', detail)?.scrollTop ?? 0;
   columns.classList.toggle('show-detail', Boolean(state.showDetail && entry));
   if (!entry) {
-    const empty = !state.items.length && state.view !== 'trash';
-    detail.innerHTML = `<div class="empty-detail"><div class="empty-icon">${icon(empty ? 'clipboard-paste' : views[state.view].icon)}</div>
-      <h2>${empty ? '先保存一条记录' : '选择一条记录'}</h2>
-      <p>${empty ? '复制文字或截图后，按快捷键立即保存。' : '选择左侧条目即可查看详情。'}</p>
-      ${empty ? action('capture', '保存剪贴板', 'clipboard-paste', 'outline') : ''}</div>`;
+    const hasItems = state.items.length > 0;
+    const capture = !hasItems && !state.tag && ['inbox', 'all'].includes(state.view);
+    const note = !hasItems && !state.tag && state.view === 'notes';
+    const heading = capture ? '先保存一条记录' : note ? '新建第一条笔记'
+      : hasItems ? '选择一条记录' : state.tag ? '这个标签没有记录' : views[state.view].empty;
+    const instruction = capture ? '复制文字或截图后，按快捷键立即保存。'
+      : note ? '写下经验，或从收件箱选择素材进行整理。'
+      : hasItems ? '选择左侧条目即可查看详情。' : '';
+    detail.innerHTML = `<div class="empty-detail"><div class="empty-icon">${icon(capture ? 'clipboard-paste' : views[state.view].icon)}</div>
+      <h2>${heading}</h2>
+      ${instruction ? '<p>' + instruction + '</p>' : ''}
+      ${capture ? action('capture', '保存剪贴板', 'clipboard-paste', 'outline')
+        : note ? action('new', '新建笔记', 'plus', 'outline') : ''}</div>`;
     return;
   }
   const section = entry.kind === 'note' ? '笔记' : '收件素材';
@@ -255,15 +264,20 @@ function renderDetail() {
 async function selectEntry(id, { open = true, preserveScroll = false } = {}) {
   const token = ++detailRequest;
   const previous = state.entry?.id;
-  const result = await request('get', { id, scope: state.scope });
-  if (token !== detailRequest) return;
-  state.selected = result.value.id;
-  if (open) state.showDetail = true;
-  if (JSON.stringify(state.entry) !== JSON.stringify(result.value) || open) {
-    state.entry = result.value;
-    if (!preserveScroll && previous !== id && $('.detail-scroll', detail)) $('.detail-scroll', detail).scrollTop = 0;
-    renderDetail();
-    if (open) renderList();
+  if (open) selecting = true;
+  try {
+    const result = await request('get', { id, scope: state.scope });
+    if (token !== detailRequest) return;
+    state.selected = result.value.id;
+    if (open) state.showDetail = true;
+    if (JSON.stringify(state.entry) !== JSON.stringify(result.value) || open) {
+      state.entry = result.value;
+      if (!preserveScroll && previous !== id && $('.detail-scroll', detail)) $('.detail-scroll', detail).scrollTop = 0;
+      renderDetail();
+      if (open) renderList();
+    }
+  } finally {
+    if (token === detailRequest && open) selecting = false;
   }
 }
 
@@ -271,6 +285,7 @@ async function refresh({ redraw = false, clear = false } = {}) {
   const token = ++listRequest;
   if (clear) {
     detailRequest++;
+    selecting = false;
     state.selected = '';
     state.entry = null;
     state.showDetail = false;
@@ -289,6 +304,8 @@ async function refresh({ redraw = false, clear = false } = {}) {
   if (token !== listRequest) return;
   if (result.scope !== state.scope) {
     if (state.scope) {
+      detailRequest++;
+      selecting = false;
       state.selected = '';
       state.entry = null;
       state.showDetail = false;
@@ -307,6 +324,7 @@ async function refresh({ redraw = false, clear = false } = {}) {
   if (redraw || tagsChanged) renderSidebar();
   if (redraw) renderMainbar();
   if (redraw || changed) renderList();
+  if (selecting) return;
   if (state.selected) {
     try { await selectEntry(state.selected, { open: false, preserveScroll: true }); }
     catch (error) {
