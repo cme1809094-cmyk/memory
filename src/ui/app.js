@@ -769,6 +769,12 @@ document.addEventListener('paste', (event) => {
 
 document.addEventListener('keydown', (event) => {
   const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'v' &&
+      !modal.open && !event.target.closest('input,textarea,[contenteditable]')) {
+    event.preventDefault();
+    if (!event.repeat) void clipCapture().catch(failure);
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && key === 'k' && dialogMode !== 'editor') {
     event.preventDefault();
     void showSearch().catch(failure);

@@ -47,23 +47,32 @@ function notify(title, body, silent = true) {
   }
 }
 
-function clipboardContent() {
-  const text = clipboard.readText();
-  const image = clipboard.readImage();
-  return { body: text, images: image.isEmpty() ? [] : [image.toPNG()] };
+async function clipboardContent() {
+  const items = await clipboard.read();
+  const text = items.find((item) => item.types.includes('text/plain'));
+  const picture = items.find((item) => item.types.includes('image/png') || item.types.includes('image/jpeg'));
+  const body = text ? await (await text.getType('text/plain')).text() : '';
+  const images = [];
+  if (picture) {
+    const type = picture.types.includes('image/png') ? 'image/png' : 'image/jpeg';
+    const blob = await picture.getType(type);
+    if (blob.size > storage.maxImage) throw new Error('每张图片最多 25 MB。');
+    images.push(Buffer.from(await blob.arrayBuffer()));
+  }
+  return { body, images };
 }
 
-function capture() {
-  const input = clipboardContent();
+async function capture() {
+  const input = await clipboardContent();
   if (!input.body.trim() && !input.images.length) throw new Error('剪贴板没有可保存的文本或图片。');
   return storage.run(configFile, 'create', { ...input, kind: 'capture', quick: true });
 }
 
-function quickCapture() {
+async function quickCapture() {
   if (saving) return;
   saving = true;
   try {
-    const { value } = capture();
+    const { value } = await capture();
     const message = value.duplicate ? '刚刚已保存' : '已保存到收件箱';
     send({ type: 'capture', message });
     notify('Memory', message);
@@ -226,7 +235,7 @@ ipcMain.handle('memory:request', async (event, operation, input = {}) => {
       return result;
     }
     if (operation === 'captureClipboard') {
-      result = capture();
+      result = await capture();
       void processOcr();
       return result;
     }
@@ -249,7 +258,7 @@ ipcMain.handle('memory:request', async (event, operation, input = {}) => {
       return { value: settingsResult() };
     }
     if (operation === 'copy') {
-      clipboard.writeText(input.text);
+      await clipboard.writeText(input.text);
       return { value: true };
     }
     if (operation === 'openDirectory') {

@@ -24,9 +24,10 @@ async function smoke() {
     const page = await app.firstWindow();
     page.on('pageerror', (error) => errors.push(error.message));
     await page.getByRole('heading', { name: '先保存一条记录' }).waitFor();
-    await app.evaluate(({ clipboard, nativeImage }, png) => {
-      clipboard.write({ text: '目录权限检查', image: nativeImage.createFromPath(png) });
-    }, path.join(__dirname, 'mixed.png'));
+    await app.evaluate(({ clipboard, ClipboardItem }, image) => clipboard.write([new ClipboardItem({
+      'text/plain': '目录权限检查',
+      'image/png': new Blob([Uint8Array.from(atob(image), (byte) => byte.charCodeAt(0))], { type: 'image/png' })
+    })]), fs.readFileSync(path.join(__dirname, 'mixed.png')).toString('base64'));
     await page.locator('body').press('Control+v');
     const captured = page.getByRole('heading', { name: '目录权限检查' });
     await captured.waitFor({ timeout: 10000 });
