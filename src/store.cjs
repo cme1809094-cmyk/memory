@@ -392,7 +392,7 @@ function run(configFile, operation, input = {}, { agent = false } = {}) {
 function initialize(configFile, directory) {
   if (!fs.existsSync(configFile)) {
     open(directory, { create: true }).close();
-    writeConfig(configFile, { directory, scope: id(), shortcut: 'Control+Shift+Alt+V', autoStart: false });
+    writeConfig(configFile, { directory, scope: id(), shortcut: 'Control+Shift+Alt+V', autoStart: false, theme: 'system' });
   }
   return readConfig(configFile);
 }

@@ -13,6 +13,8 @@ Windows 11 x64 本地知识库。平时用快捷键保存剪贴板，之后把�
 
 打开笔记可查看来源、解除关联、编辑或恢复历史版本。删除后的记录可以在回收站恢复。清空回收站会永久移除其中的记录和相关历史。
 
+在「设置 → 外观」选择浅色、深色或跟随系统。切换即时生效，重启后保留选择。
+
 ## 接入 Agent
 
 打开侧栏「Agent 接入」，选择客户端并复制本机配置。三个客户端使用同一个经 stdio 连接的服务。
@@ -44,6 +46,6 @@ npm run start
 npm run dist:win
 ```
 
-安装包输出到 `dist/Memory-Setup-0.1.0-x64.exe`。当前构建未签名。使用 `npm run demo` 可在独立数据目录打开虚构示例，示例不随安装包分发。使用 `npm run test:desktop` 运行 Electron 桌面端验收。
+安装包输出到 `dist/Memory-Setup-0.1.1-x64.exe`。当前构建未签名。使用 `npm run demo` 可在独立数据目录打开虚构示例，示例不随安装包分发。使用 `npm run test:desktop` 运行 Electron 桌面端验收。
 
 桌面端采用 Electron 与原生 Windows 剪贴板、托盘和全局快捷键。数据层使用 SQLite，离线识别使用随应用分发的 Tesseract 模型。开发与打包需要下载依赖，安装后的记录、搜索、备份和 OCR 可离线使用。

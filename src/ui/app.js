@@ -16,6 +16,7 @@ const views = {
   all: { name: '全部记录', icon: 'layers', caption: '浏览素材和笔记。', empty: '还没有记录' },
   trash: { name: '回收站', icon: 'trash-2', caption: '你可以恢复误删的内容。', empty: '回收站是空的' }
 };
+const themes = { light: '浅色', dark: '深色', system: '跟随系统' };
 const state = {
   view: 'inbox', tag: '', scope: '', selected: '', entry: null, items: [], tags: [],
   more: false, pages: 1, multi: false, checked: new Set(), settings: null, showDetail: false
@@ -565,6 +566,12 @@ async function showSettings() {
   state.settings = (await request('settings')).value;
   const settings = state.settings;
   openDialog('settings', '设置', `
+    <fieldset class="theme-setting">
+      <legend>外观</legend>
+      <div class="theme-options">${Object.entries(themes).map(([value, label]) => `
+        <label><input type="radio" name="theme" value="${value}" ${settings.theme === value ? 'checked' : ''}>
+          <span>${label}</span></label>`).join('')}</div>
+    </fieldset>
     <form id="settings-form" class="form">
       <div class="field"><label for="shortcut">全局保存快捷键</label>
         <input id="shortcut" name="shortcut" value="${e(settings.shortcut)}" autocapitalize="off" spellcheck="false">
@@ -741,6 +748,19 @@ document.addEventListener('click', (event) => {
   if (button) void handle(button).catch(dialogMode === 'editor' ? modalError : failure);
 });
 
+modal.addEventListener('change', async ({ target }) => {
+  if (dialogMode !== 'settings' || target.name !== 'theme') return;
+  try {
+    const { value } = await request('setTheme', { theme: target.value });
+    state.settings.theme = value;
+  } catch (error) {
+    if (target.isConnected && target.checked) {
+      $('input[name="theme"][value="' + state.settings.theme + '"]', modal).checked = true;
+    }
+    failure(error);
+  }
+});
+
 document.addEventListener('submit', (event) => {
   event.preventDefault();
   if (event.target.id === 'editor-form') void saveEditor(event.target);
@@ -795,7 +815,11 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-window.memory.subscribe(({ type, message }) => {
+window.memory.subscribe(({ type, message, colorScheme }) => {
+  if (type === 'appearance') {
+    document.documentElement.dataset.colorScheme = colorScheme;
+    return;
+  }
   if (type === 'error') say(message, true);
   if (type === 'capture') say(message);
   if (type === 'switch') void navigate('inbox').catch(failure);
@@ -808,6 +832,7 @@ renderList();
 renderDetail();
 request('settings').then((result) => {
   state.settings = result.value;
+  document.documentElement.dataset.colorScheme = state.settings.colorScheme;
   if (state.settings.shortcutError) say(state.settings.shortcutError, true);
   return refresh({ redraw: true });
 }).catch(failure);

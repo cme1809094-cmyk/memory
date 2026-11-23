@@ -12,18 +12,35 @@ async function smoke() {
   const config = path.join(profile, 'settings.json');
   const executable = packaged || process.env.MEMORY_DEV_EXECUTABLE;
   const library = path.join(profile, 'Library');
-  storage.initialize(config, library);
-  const app = await _electron.launch({
+  const { theme, ...legacySettings } = storage.initialize(config, library);
+  assert.equal(theme, 'system');
+  storage.writeConfig(config, legacySettings);
+  const launch = () => _electron.launch({
     executablePath: executable,
     args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), ...(packaged ? [] : [path.join(__dirname, '..')])],
     env: { ...process.env, MEMORY_DEV_DATA: root, XDG_CONFIG_HOME: root, APPDATA: root },
     timeout: 25000
   });
+  let app = await launch();
   const errors = [];
   try {
     const page = await app.firstWindow();
     page.on('pageerror', (error) => errors.push(error.message));
     await page.getByRole('heading', { name: '先保存一条记录' }).waitFor();
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    const appearance = page.getByRole('group', { name: '外观' });
+    assert.equal(await appearance.getByRole('radio', { name: '深色' }).isChecked(), true);
+    await appearance.getByText('浅色', { exact: true }).click();
+    await page.waitForFunction(() => getComputedStyle(document.documentElement).colorScheme === 'light');
+    await appearance.getByRole('radio', { name: '浅色' }).press('ArrowRight');
+    await page.waitForFunction(() => getComputedStyle(document.documentElement).colorScheme === 'dark');
+    await appearance.getByText('跟随系统', { exact: true }).click();
+    await page.waitForFunction(async () => (await window.memory.request('settings')).value.theme === 'system');
+    const systemScheme = await app.evaluate(({ nativeTheme }) => nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
+    await page.waitForFunction((scheme) => getComputedStyle(document.documentElement).colorScheme === scheme, systemScheme);
+    await appearance.getByText('浅色', { exact: true }).click();
+    await page.waitForFunction(() => getComputedStyle(document.documentElement).colorScheme === 'light');
+    await page.getByRole('button', { name: '关闭' }).click();
     await app.evaluate(({ clipboard, ClipboardItem }, image) => clipboard.write([new ClipboardItem({
       'text/plain': '目录权限检查',
       'image/png': new Blob([Uint8Array.from(atob(image), (byte) => byte.charCodeAt(0))], { type: 'image/png' })
@@ -85,7 +102,13 @@ async function smoke() {
     await page.getByRole('heading', { name: '知识库', exact: true }).waitFor();
     assert.notEqual(storage.readConfig(config).directory, library);
     assert.deepEqual(errors, []);
-    console.log('Desktop flow passed: clipboard, OCR, search, organize, edit, history, trash, MCP setup, backup and restore.');
+    await app.close();
+    app = await launch();
+    const reopened = await app.firstWindow();
+    await reopened.getByRole('button', { name: '设置', exact: true }).click();
+    assert.equal(await reopened.getByRole('radio', { name: '浅色' }).isChecked(), true);
+    await reopened.waitForFunction(() => getComputedStyle(document.documentElement).colorScheme === 'light');
+    console.log('Desktop flow passed: theme switching and persistence, clipboard, OCR, search, organization, edit, history, trash, MCP setup, backup and restore.');
   } finally {
     await app.close();
     fs.rmSync(root, { recursive: true, force: true });

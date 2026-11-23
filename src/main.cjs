@@ -1,5 +1,5 @@
 const { app, BrowserWindow, Menu, Tray, Notification, nativeImage, globalShortcut, clipboard,
-  dialog, ipcMain, protocol, net, shell } = require('electron');
+  dialog, ipcMain, protocol, net, shell, nativeTheme } = require('electron');
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -24,6 +24,7 @@ const pages = new Set(['index.html', 'app.js', 'icons.js', 'styles.css', 'app.pn
 const storeOperations = new Set(['list', 'get', 'create', 'edit', 'delete', 'restore', 'detach', 'purge',
   'restoreRevision', 'revisions', 'tags', 'image', 'retryOcr']);
 const writes = new Set(['create', 'edit', 'delete', 'restore', 'detach', 'purge', 'restoreRevision', 'retryOcr']);
+const themes = new Set(['light', 'dark', 'system']);
 let window;
 let tray;
 let quitting = false;
@@ -111,19 +112,34 @@ async function processOcr() {
   }
 }
 
+function windowColors() {
+  return nativeTheme.shouldUseDarkColors
+    ? { backgroundColor: '#191a1f', titleBarOverlay: { color: '#141519', symbolColor: '#a5a8b3', height: 34 } }
+    : { backgroundColor: '#f6f7fa', titleBarOverlay: { color: '#f2f3f7', symbolColor: '#50566a', height: 34 } };
+}
+
+function updateWindowColors() {
+  if (!window || window.isDestroyed()) return;
+  const { backgroundColor, titleBarOverlay } = windowColors();
+  window.setBackgroundColor(backgroundColor);
+  if (process.platform === 'win32') window.setTitleBarOverlay(titleBarOverlay);
+  send({ type: 'appearance', colorScheme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light' });
+}
+
 function openWindow() {
   if (window && !window.isDestroyed()) {
     window.show();
     window.focus();
     return;
   }
+  const { backgroundColor, titleBarOverlay } = windowColors();
   window = new BrowserWindow({
     width: 1300, height: 830, minWidth: 660, minHeight: 540, show: false, icon,
-    backgroundColor: '#18191d', title: 'Memory',
+    backgroundColor, title: 'Memory',
     autoHideMenuBar: true,
     ...(process.platform === 'win32' ? {
       titleBarStyle: 'hidden',
-      titleBarOverlay: { color: '#141519', symbolColor: '#a5a8b3', height: 34 }
+      titleBarOverlay
     } : {}),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true }
   });
@@ -156,7 +172,8 @@ function settingsResult() {
     ...Object.entries(env).map(([key, value]) => '--env ' + powershell(key + '=' + value)),
     '--', powershell(command), powershell(script)
   ].join(' ');
-  return { ...config, shortcutError, autoStartSupported: process.platform === 'win32',
+  return { ...config, theme: nativeTheme.themeSource, colorScheme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+    shortcutError, autoStartSupported: process.platform === 'win32',
     snippets: { codex, claude: claudeCommand, opencode: JSON.stringify(opencode, null, 2) } };
 }
 
@@ -240,6 +257,13 @@ ipcMain.handle('memory:request', async (event, operation, input = {}) => {
       return result;
     }
     if (operation === 'settings') return { value: settingsResult() };
+    if (operation === 'setTheme') {
+      if (!themes.has(input.theme)) throw new Error('请选择有效的外观主题。');
+      const config = storage.readConfig(configFile);
+      storage.writeConfig(configFile, { ...config, theme: input.theme });
+      nativeTheme.themeSource = input.theme;
+      return { value: input.theme };
+    }
     if (operation === 'saveSettings') {
       validateShortcut(input.shortcut);
       const previous = storage.readConfig(configFile);
@@ -281,6 +305,8 @@ else {
   app.on('second-instance', openWindow);
   app.whenReady().then(async () => {
     const config = storage.initialize(configFile, path.join(dataPath, 'Library'));
+    nativeTheme.themeSource = themes.has(config.theme) ? config.theme : 'dark';
+    nativeTheme.on('updated', updateWindowColors);
     protocol.handle('memory', (request) => {
       const url = new URL(request.url);
       const filename = url.pathname.slice(1);
