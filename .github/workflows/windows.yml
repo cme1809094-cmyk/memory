@@ -21,11 +21,16 @@ jobs:
       - run: npm test
       - run: npm run test:desktop
       - run: npm run dist:win -- --publish never
-      - name: Verify packaged MCP
+      - name: Verify custom installation and installed MCP
         shell: pwsh
         run: |
-          $env:MEMORY_TEST_EXECUTABLE = Join-Path $PWD 'dist/win-unpacked/Memory.exe'
-          $env:MEMORY_TEST_SCRIPT = Join-Path $PWD 'dist/win-unpacked/resources/app.asar/src/mcp.cjs'
+          $installer = (Get-ChildItem dist -Filter 'Memory-Setup-*-x64.exe').FullName
+          $installDir = Join-Path $env:RUNNER_TEMP 'Custom Folder/Memory'
+          $process = Start-Process $installer -ArgumentList '/S', '/currentuser', "/D=$installDir" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer exited with code $($process.ExitCode)" }
+          $env:MEMORY_TEST_EXECUTABLE = Join-Path $installDir 'Memory.exe'
+          $env:MEMORY_TEST_SCRIPT = Join-Path $installDir 'resources/app.asar/src/mcp.cjs'
+          if (-not (Test-Path $env:MEMORY_TEST_EXECUTABLE)) { throw "Memory did not install to $installDir" }
           node --test --test-name-pattern='MCP stdio' test/memory.test.cjs
       - uses: actions/upload-artifact@v4
         with:

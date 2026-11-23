@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { _electron } = require('playwright');
 const storage = require('../src/store.cjs');
 
@@ -80,6 +81,25 @@ async function smoke() {
       assert.match(await page.locator('.snippet').textContent(), /MEMORY_CONFIG/);
     }
     await page.getByRole('button', { name: '关闭' }).click();
+    await page.getByRole('button', { name: '收件箱', exact: true }).click();
+    const copiedFile = path.join(root, '部署 #3.md');
+    const fileContents = '# 部署会议纪要\n周四验证缓存配置。\n' + '正文'.repeat(18000) + '末尾未索引';
+    fs.writeFileSync(copiedFile, fileContents);
+    await app.evaluate(({ clipboard, ClipboardItem }, uri) =>
+      clipboard.write([new ClipboardItem({ 'text/uri-list': uri + '\r\n' })]),
+    pathToFileURL(copiedFile).href);
+    await page.locator('body').press('Control+v');
+    await page.getByRole('heading', { name: '部署 #3.md' }).waitFor();
+    await page.locator('.file-attachment').getByText(/周四验证缓存配置/).waitFor();
+    assert.equal(storage.run(config, 'list', { query: '末尾未索引' }).value.items.length, 0);
+    fs.rmSync(copiedFile);
+    const exportedFile = path.join(root, '导出的部署.md');
+    await app.evaluate(({ dialog }, destination) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: destination });
+    }, exportedFile);
+    await page.getByRole('button', { name: '另存' }).click();
+    await page.getByText('文件已另存', { exact: true }).waitFor();
+    assert.equal(fs.readFileSync(exportedFile, 'utf8'), fileContents);
     await app.evaluate(({ dialog }, folder) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
     }, root);
@@ -94,6 +114,7 @@ async function smoke() {
     }, [path.join(root, backup), root]);
     await page.getByRole('button', { name: '恢复备份' }).click();
     await page.getByText('已打开知识库副本').waitFor();
+    assert.equal(storage.run(config, 'list', { query: '验证缓存配置' }).value.items.length, 1);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(710, 640));
     await page.getByRole('button', { name: '显示导航' }).click();
     await page.getByRole('button', { name: '知识库', exact: true }).click();
@@ -108,7 +129,7 @@ async function smoke() {
     await reopened.getByRole('button', { name: '设置', exact: true }).click();
     assert.equal(await reopened.getByRole('radio', { name: '浅色' }).isChecked(), true);
     await reopened.waitForFunction(() => getComputedStyle(document.documentElement).colorScheme === 'light');
-    console.log('Desktop flow passed: theme switching and persistence, clipboard, OCR, search, organization, edit, history, trash, MCP setup, backup and restore.');
+    console.log('Desktop flow passed: theme, text/image/file clipboard capture, file export, search, editing, MCP setup, backup and restore.');
   } finally {
     await app.close();
     fs.rmSync(root, { recursive: true, force: true });

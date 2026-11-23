@@ -34,7 +34,7 @@ const e = (value = '') => String(value).replace(/[&<>"']/g, (c) => ({
 const nameOf = (entry) => entry.title || (entry.body || entry.excerpt || '').trim().split('\n')[0].slice(0, 65)
   || (entry.imageCount || entry.images?.length ? '剪贴板截图' : '未命名记录');
 const typeOf = (entry) => entry.kind === 'note' ? 'file-text'
-  : entry.imageCount || entry.images?.length ? 'image' : 'clipboard';
+  : entry.imageCount || entry.images?.length ? 'image' : entry.fileCount || entry.files?.length ? 'paperclip' : 'clipboard';
 const action = (name, text, glyph, style = '', data = '') =>
   `<button type="button" class="button ${style}" data-action="${name}" ${data}>${glyph ? icon(glyph) : ''}<span>${e(text)}</span></button>`;
 const iconAction = (name, text, glyph, style = '', data = '') =>
@@ -117,6 +117,7 @@ function renderMainbar() {
     ${icon(state.tag ? 'hash' : view.icon)}<span class="crumb-current">${e(state.tag || view.name)}</span>
     </div><div class="main-actions">
     <button class="button outline search-top" data-action="search">${icon('search')}<span>搜索</span><kbd>Ctrl K</kbd></button>
+    ${action('import-files', '导入文件', 'upload', 'outline')}
     ${action('capture', '保存剪贴板', 'clipboard-paste', 'outline', `title="${e(shortcutLabel())}"`)}
     </div>`;
 }
@@ -133,6 +134,7 @@ function entryRow(item, search = false) {
       <span class="entry-excerpt">${e(item.excerpt || (item.imageCount ? '图片附件' : ''))}</span>
       <span class="entry-labels">
         ${item.imageCount ? `<span class="label">${icon('image')}${item.imageCount} 张图片</span>` : ''}
+        ${item.fileCount ? `<span class="label">${icon('paperclip')}${item.fileCount} 个文件</span>` : ''}
         ${item.localOnly ? `<span class="label">${icon('lock-keyhole')} 仅本机</span>` : ''}
         ${tags ? `<span class="label">${icon('hash')}${e(tags)}</span>` : ''}
       </span>
@@ -195,6 +197,21 @@ function attachment(image, index) {
       <img data-image="${e(image.id)}" alt="笔记附件 ${index + 1}"></button>${info}</figure>`;
 }
 
+function fileSize(bytes) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = bytes > 0 ? Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1) : 0;
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(bytes / (1024 ** index)) + ' ' + units[index];
+}
+
+function fileAttachment(file) {
+  const data = 'data-id="' + e(file.id) + '"';
+  return `<div class="file-attachment">
+    <div class="file-heading">${icon('paperclip')}<strong>${e(file.name)}</strong><small>${fileSize(file.size)}</small>
+      ${action('export-file', '另存', 'download', 'outline', data)}</div>
+    <p>${e(file.summary || '可在条目正文补充摘要。')}</p>
+  </div>`;
+}
+
 async function loadImage(id) {
   const scope = state.scope;
   if (!imageCache.has(id)) {
@@ -218,7 +235,7 @@ function renderDetail() {
     const note = !hasItems && !state.tag && state.view === 'notes';
     const heading = capture ? '先保存一条记录' : note ? '新建第一条笔记'
       : hasItems ? '选择一条记录' : state.tag ? '这个标签没有记录' : views[state.view].empty;
-    const instruction = capture ? '复制文字或截图后，按快捷键立即保存。'
+    const instruction = capture ? '复制文字、截图或文件后，按快捷键立即保存。'
       : note ? '写下经验，或从收件箱选择素材进行整理。'
       : hasItems ? '选择左侧条目即可查看详情。' : '';
     detail.innerHTML = `<div class="empty-detail"><div class="empty-icon">${icon(capture ? 'clipboard-paste' : views[state.view].icon)}</div>
@@ -247,6 +264,7 @@ function renderDetail() {
       </div>
       ${displayBody(entry.body)}
       ${entry.images.length ? '<section class="detail-section"><h3 class="section-heading">' + icon('paperclip') + ' 附件</h3>' + entry.images.map(attachment).join('') + '</section>' : ''}
+      ${entry.files.length ? '<section class="detail-section"><h3 class="section-heading">' + icon('folder') + ' 文件</h3>' + entry.files.map(fileAttachment).join('') + '</section>' : ''}
       ${entry.sources.length ? `<section class="detail-section"><h3 class="section-heading">${icon('link')} 来源素材</h3>
         ${entry.sources.map((source) => `<div class="source-row">${action('source', nameOf(source) + (source.deleted ? '（已删除）' : ''), 'clipboard', '', 'data-id="' + e(source.id) + '"')}
           ${!entry.deleted && !source.deleted ? iconAction('detach', '退回素材', 'unlink', '', 'data-id="' + e(source.id) + '"') : ''}</div>`).join('')}
@@ -476,7 +494,7 @@ async function saveEditor(form) {
 
 async function showSearch() {
   openDialog('search', '全库搜索', `<div class="search-line">${icon('search')}
-      <input type="search" id="search-input" aria-label="搜索知识库" placeholder="搜索标题、正文、标签和图片文字" autocomplete="off">
+      <input type="search" id="search-input" aria-label="搜索知识库" placeholder="搜索笔记、图片文字、文件名或摘要" autocomplete="off">
       <kbd>Esc</kbd></div><div class="search-results" id="search-results"></div>
       <div class="search-hint">↑ ↓ 选择 · Enter 打开</div>`, '', { wide: true, bare: true, focus: '#search-input' });
   const input = $('#search-input');
@@ -610,8 +628,9 @@ async function showAgent(tab = agentTab) {
     </div>`, action('copy-config', '复制配置', 'copy', 'primary'), { wide: true });
 }
 
-async function clipCapture() {
-  const result = await request('captureClipboard');
+async function saveToInbox(operation = 'captureClipboard') {
+  const result = await request(operation);
+  if (!result.value) return;
   await refresh();
   if (state.view === 'inbox' && !state.tag && !result.value.duplicate) {
     await selectEntry(result.value.id, { open: false });
@@ -634,7 +653,17 @@ async function handle(button) {
     return;
   }
   if (type === 'new') return showEditor();
-  if (type === 'capture') return clipCapture();
+  if (type === 'capture') return saveToInbox();
+  if (type === 'import-files' || type === 'export-file') {
+    if (!formBusy(button)) return;
+    try {
+      if (type === 'import-files') await saveToInbox('importFiles');
+      else if ((await request('exportFile', { id, scope: state.scope })).value) say('文件已另存');
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
   if (type === 'search') return showSearch();
   if (type === 'close') return closeDialog();
   if (type === 'entry') {
@@ -783,7 +812,7 @@ document.addEventListener('paste', (event) => {
     if (files.length) void attachFiles(files);
   } else if (!modal.open && !event.target.closest('input,textarea,[contenteditable]')) {
     event.preventDefault();
-    void clipCapture().catch(failure);
+    void saveToInbox().catch(failure);
   }
 });
 
@@ -792,7 +821,7 @@ document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'v' &&
       !modal.open && !event.target.closest('input,textarea,[contenteditable]')) {
     event.preventDefault();
-    if (!event.repeat) void clipCapture().catch(failure);
+    if (!event.repeat) void saveToInbox().catch(failure);
     return;
   }
   if ((event.ctrlKey || event.metaKey) && key === 'k' && dialogMode !== 'editor') {

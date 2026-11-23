@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const maxImage = 25 * 1024 * 1024;
+const schemaVersion = 2;
 const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const jpeg = Buffer.from([255, 216, 255]);
 const id = () => crypto.randomUUID();
@@ -27,7 +28,7 @@ function writeConfig(configFile, config) {
   }
 }
 
-function open(directory, { create = false } = {}) {
+function open(directory, { create = false, migrate = true } = {}) {
   if (create) fs.mkdirSync(path.join(directory, 'images'), { recursive: true });
   const file = path.join(directory, 'memory.sqlite');
   if (!create && !fs.existsSync(file)) fail('找不到知识库数据库。');
@@ -73,7 +74,23 @@ function open(directory, { create = false } = {}) {
       `);
       db.exec('COMMIT;');
     }
-    if (db.prepare('PRAGMA user_version').get().user_version !== 1) fail('知识库版本不受支持。');
+    version = db.prepare('PRAGMA user_version').get().user_version;
+    if (version === 1 && migrate) {
+      transaction(db, () => {
+        if (db.prepare('PRAGMA user_version').get().user_version !== 1) return;
+        fs.mkdirSync(path.join(directory, 'files'), { recursive: true });
+        db.exec(`
+          CREATE TABLE files (
+            id TEXT PRIMARY KEY, entry TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+            name TEXT NOT NULL, size INTEGER NOT NULL, summary TEXT NOT NULL
+          );
+          CREATE INDEX files_entry ON files(entry);
+          PRAGMA user_version=2;
+        `);
+      });
+      version = db.prepare('PRAGMA user_version').get().user_version;
+    }
+    if (version !== schemaVersion && (migrate || version !== 1)) fail('知识库版本不受支持。');
     return db;
   } catch (error) {
     db.close();
@@ -98,6 +115,24 @@ function imagePath(directory, hash) {
   return path.join(directory, 'images', hash);
 }
 
+const isFileId = (key) => /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(key);
+
+function filePath(directory, key) {
+  if (!isFileId(key)) fail('文件标识无效。');
+  return path.join(directory, 'files', key);
+}
+
+function assets(db) {
+  const groups = [{ folder: 'images', pathFor: imagePath,
+    keys: db.prepare('SELECT DISTINCT hash AS key FROM images').all(),
+    owns: (name) => /^[a-f\d]{64}(?:\.[a-f\d-]{36})?$/.test(name) }];
+  if (db.prepare('PRAGMA user_version').get().user_version === schemaVersion) {
+    groups.push({ folder: 'files', pathFor: filePath,
+      keys: db.prepare('SELECT id AS key,size FROM files').all(), owns: isFileId });
+  }
+  return groups;
+}
+
 function entryView(row) {
   return {
     id: row.id, kind: row.kind, title: row.title, body: row.body, tags: JSON.parse(row.tags),
@@ -116,11 +151,16 @@ function imagesFor(db, entry) {
   return db.prepare('SELECT id,mime,status,ocr FROM images WHERE entry=? AND visible=1 ORDER BY rowid').all(entry);
 }
 
+function filesFor(db, entry) {
+  return db.prepare('SELECT id,name,size,summary FROM files WHERE entry=? ORDER BY rowid').all(entry);
+}
+
 function details(db, row, agent) {
   const visibility = agent ? 'AND c.local_only=0' : '';
   return {
     ...entryView(row),
     images: imagesFor(db, row.id),
+    files: filesFor(db, row.id),
     sources: db.prepare(`
       SELECT c.id,c.title,c.body,c.deleted FROM sources s JOIN entries c ON c.id=s.capture
       WHERE s.note=? ${agent ? 'AND c.deleted IS NULL' : ''} ${visibility} ORDER BY s.rowid
@@ -133,7 +173,8 @@ function details(db, row, agent) {
 function reindex(db, entry) {
   const row = find(db, entry);
   const value = normalize([row.title, row.body, JSON.parse(row.tags).join(' '),
-    ...imagesFor(db, entry).map((image) => image.ocr)].join('\n'));
+    ...imagesFor(db, entry).map((image) => image.ocr),
+    ...filesFor(db, entry).map((file) => [file.name, file.summary].join('\n'))].join('\n'));
   db.prepare('INSERT OR REPLACE INTO search_text VALUES (?,?)').run(entry, value);
   db.prepare('DELETE FROM search_fts WHERE entry=?').run(entry);
   db.prepare('INSERT INTO search_fts VALUES (?,?)').run(entry, value);
@@ -167,7 +208,9 @@ function list(db, input, agent) {
   }
   const results = db.prepare(`
     SELECT e.*, (SELECT count(*) FROM images WHERE entry=e.id AND visible=1) AS image_count,
-      (SELECT group_concat(ocr, char(10)) FROM images WHERE entry=e.id AND visible=1 AND ocr!='') AS ocr
+      (SELECT group_concat(ocr, char(10)) FROM images WHERE entry=e.id AND visible=1 AND ocr!='') AS ocr,
+      (SELECT count(*) FROM files WHERE entry=e.id) AS file_count,
+      (SELECT group_concat(name || ' ' || summary, char(10)) FROM files WHERE entry=e.id) AS file_text
     FROM entries e JOIN search_text s ON s.entry=e.id WHERE ${where.join(' AND ')}
     ORDER BY ${view === 'trash' ? 'e.deleted' : 'e.updated'} DESC, e.rowid DESC LIMIT ? OFFSET ?
   `).all(...values, limit + 1, Math.max(0, offset));
@@ -175,11 +218,11 @@ function list(db, input, agent) {
     more: results.length > limit,
     items: results.slice(0, limit).map((row) => {
       const { body, ...item } = entryView(row);
-      const text = [body, row.ocr].filter(Boolean).join('\n').replace(/\s+/g, ' ').trim();
+      const text = [body, row.ocr, row.file_text].filter(Boolean).join('\n').replace(/\s+/g, ' ').trim();
       let at = terms.map((term) => normalize(text).indexOf(term)).find((index) => index >= 0) ?? 0;
       at = Math.max(0, at - 28);
       const excerpt = (at ? '…' : '') + text.slice(at, at + 166) + (at + 166 < text.length ? '…' : '');
-      return { ...item, excerpt, imageCount: row.image_count };
+      return { ...item, excerpt, imageCount: row.image_count, fileCount: row.file_count };
     })
   };
 }
@@ -235,15 +278,18 @@ function saveImages(db, directory, entry, images) {
   }
 }
 
-function create(db, directory, input, agent) {
+function create(db, directory, input, agent, files) {
   const { kind = 'note', title = '', body = '', images = [], sources = [], localOnly = false, quick = false } = input;
-  if (!body.trim() && !title.trim() && !images.length && !sources.length) fail('请添加文本、图片或来源素材。');
+  if (!body.trim() && !title.trim() && !images.length && !sources.length && !files.length) {
+    fail('请添加文本、图片、文件或来源素材。');
+  }
   const key = id();
   const now = iso();
   let fingerprint = null;
   if (quick) {
     const digest = crypto.createHash('sha256').update(body).update('\0');
     for (const image of images) digest.update(crypto.createHash('sha256').update(image).digest());
+    for (const file of files) digest.update(file.fingerprint);
     fingerprint = digest.digest('hex');
     const duplicate = db.prepare(`
       SELECT id FROM entries WHERE fingerprint=? AND deleted IS NULL AND created>=? LIMIT 1
@@ -255,6 +301,11 @@ function create(db, directory, input, agent) {
     VALUES (?,?,?,?,?,?,?,?,?)
   `).run(key, kind, title.trim(), body, JSON.stringify(tagsFrom(input.tags)), Number(localOnly), now, now, fingerprint);
   saveImages(db, directory, key, images);
+  for (const file of files) {
+    fs.renameSync(file.staged, filePath(directory, file.id));
+    db.prepare('INSERT INTO files (id,entry,name,size,summary) VALUES (?,?,?,?,?)')
+      .run(file.id, key, file.name, file.size, file.summary);
+  }
   if (kind === 'note') linkSources(db, key, sources, agent);
   enforcePrivacy(db, key);
   reindex(db, key);
@@ -286,7 +337,7 @@ function edit(db, directory, input, agent) {
 const writeOperations = new Set(['create', 'edit', 'delete', 'restore', 'detach', 'restoreRevision',
   'purge', 'retryOcr', 'completeOcr']);
 
-function operate(db, directory, operation, input, agent) {
+function operate(db, directory, operation, input, agent, files) {
   if (operation === 'list') return list(db, input, agent);
   if (operation === 'get') return details(db, find(db, input.id, agent), agent);
   if (operation === 'tags') {
@@ -306,13 +357,19 @@ function operate(db, directory, operation, input, agent) {
     find(db, row.entry, agent);
     return { mime: row.mime, data: fs.readFileSync(imagePath(directory, row.hash)).toString('base64') };
   }
+  if (operation === 'file' && !agent) {
+    const file = db.prepare('SELECT id,name,entry FROM files WHERE id=?').get(input.id);
+    if (!file) fail('找不到文件附件。');
+    find(db, file.entry);
+    return { name: file.name, path: filePath(directory, file.id) };
+  }
   if (operation === 'pendingOcr') {
     return db.prepare(`
       SELECT i.id, i.hash FROM images i JOIN entries e ON e.id=i.entry
       WHERE i.status='pending' AND i.visible=1 AND e.deleted IS NULL ORDER BY i.rowid LIMIT 1
     `).get();
   }
-  if (operation === 'create') return create(db, directory, input, agent);
+  if (operation === 'create') return create(db, directory, input, agent, files);
   if (operation === 'edit') return edit(db, directory, input, agent);
   if (operation === 'restoreRevision') {
     const revision = db.prepare('SELECT value FROM revisions WHERE entry=? AND version=?').get(input.id, input.version);
@@ -355,18 +412,19 @@ function operate(db, directory, operation, input, agent) {
   fail('不支持的操作。');
 }
 
-function collectImages(db, directory) {
+function collectAssets(db, directory) {
   transaction(db, () => {
-    const referenced = new Set(db.prepare('SELECT DISTINCT hash FROM images').all().map((row) => row.hash));
-    for (const filename of fs.readdirSync(path.join(directory, 'images'))) {
-      if (!referenced.has(filename) && /^[a-f\d]{64}(?:\.[a-f\d-]{36})?$/.test(filename)) {
-        fs.rmSync(path.join(directory, 'images', filename), { force: true });
+    for (const { folder, keys, owns } of assets(db)) {
+      const referenced = new Set(keys.map(({ key }) => key));
+      const assetDirectory = path.join(directory, folder);
+      for (const filename of fs.readdirSync(assetDirectory)) {
+        if (!referenced.has(filename) && owns(filename)) fs.rmSync(path.join(assetDirectory, filename), { force: true });
       }
     }
   });
 }
 
-function run(configFile, operation, input = {}, { agent = false } = {}) {
+function run(configFile, operation, input = {}, { agent = false, files = [] } = {}) {
   const { directory, scope } = readConfig(configFile);
   if (input.scope && input.scope !== scope) fail('活动知识库已切换，请重新查询。');
   const db = open(directory);
@@ -380,9 +438,9 @@ function run(configFile, operation, input = {}, { agent = false } = {}) {
     if (agent && operation !== 'create' && input.scope !== scope) fail('修改前需要从当前知识库重新读取条目。');
     const value = transaction(db, () => {
       if (readConfig(configFile).scope !== scope) fail('活动知识库已切换，请重新查询。');
-      return operate(db, directory, operation, input, agent);
+      return operate(db, directory, operation, input, agent, files);
     });
-    if (operation === 'purge') collectImages(db, directory);
+    if (operation === 'purge') collectAssets(db, directory);
     return { scope, value };
   } finally {
     db.close();
@@ -400,11 +458,14 @@ function initialize(configFile, directory) {
 function validateLibrary(directory) {
   const db = new DatabaseSync(path.join(directory, 'memory.sqlite'), { readOnly: true });
   try {
-    if (db.prepare('PRAGMA user_version').get().user_version !== 1 ||
+    if (![1, schemaVersion].includes(db.prepare('PRAGMA user_version').get().user_version) ||
         db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') fail('知识库文件无效。');
-    if (!fs.statSync(path.join(directory, 'images')).isDirectory()) fail('知识库图片目录无效。');
-    for (const { hash } of db.prepare('SELECT DISTINCT hash FROM images').all()) {
-      if (!fs.statSync(imagePath(directory, hash)).isFile()) fail('备份中的图片文件不完整。');
+    for (const { folder, keys, pathFor } of assets(db)) {
+      if (!fs.statSync(path.join(directory, folder)).isDirectory()) fail('知识库附件目录无效。');
+      for (const { key, size } of keys) {
+        const asset = fs.statSync(pathFor(directory, key));
+        if (!asset.isFile() || (size !== undefined && asset.size !== size)) fail('备份中的附件不完整。');
+      }
     }
   } finally {
     db.close();
@@ -414,15 +475,16 @@ function validateLibrary(directory) {
 function copyLibrary(source, target) {
   if (fs.existsSync(target)) fail('目标目录已存在，请选择新的位置。');
   const staging = target + '.' + id();
-  const lock = open(source);
+  const lock = open(source, { migrate: false });
   try {
-    fs.mkdirSync(path.join(staging, 'images'), { recursive: true });
+    fs.mkdirSync(staging, { recursive: true });
     transaction(lock, () => {
-      const reader = open(source);
+      const reader = open(source, { migrate: false });
       try {
         reader.prepare('VACUUM INTO ?').run(path.join(staging, 'memory.sqlite'));
-        for (const { hash } of reader.prepare('SELECT DISTINCT hash FROM images').all()) {
-          fs.copyFileSync(imagePath(source, hash), imagePath(staging, hash));
+        for (const { folder, keys, pathFor } of assets(reader)) {
+          fs.mkdirSync(path.join(staging, folder));
+          for (const { key } of keys) fs.copyFileSync(pathFor(source, key), pathFor(staging, key));
         }
       } finally {
         reader.close();
@@ -436,4 +498,10 @@ function copyLibrary(source, target) {
   }
 }
 
-module.exports = { initialize, readConfig, writeConfig, run, validateLibrary, copyLibrary, imagePath, maxImage };
+function prepareFileDirectory(directory) {
+  open(directory).close();
+  return path.join(directory, 'files');
+}
+
+module.exports = { initialize, readConfig, writeConfig, run, validateLibrary, copyLibrary,
+  imagePath, filePath, prepareFileDirectory, maxImage };

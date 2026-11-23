@@ -41,14 +41,14 @@ function tool(name, description, inputSchema, operation, options = {}) {
   });
 }
 
-tool('memory_search', 'Search matching titles, text, tags, and on-device OCR. Returns IDs and brief excerpts. An empty query browses recent items.', {
+tool('memory_search', 'Search titles, text, tags, image OCR, filenames, and bounded file summaries. Returns IDs and brief excerpts. An empty query browses recent items.', {
   query: z.string().max(500).optional(),
   view: z.enum(['all', 'inbox', 'notes', 'filed']).optional(),
   tag: z.string().max(100).optional(),
   limit: z.number().int().min(1).max(50).default(15),
   offset: z.number().int().min(0).optional()
 }, 'list', { read: true });
-tool('memory_get', 'Read the current entry, source references, revision and OCR. Images are retrieved separately.', {
+tool('memory_get', 'Read the current entry, source references, revision and OCR. Images are retrieved separately. File attachments include filename, size, and a short summary.', {
   id: key, scope: key.optional()
 }, 'get', { read: true });
 tool('memory_image', 'Read the original screenshot using an image ID from memory_get.', {

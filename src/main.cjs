@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const storage = require('./store.cjs');
 const { createRecognizer } = require('./ocr.cjs');
+const { clipboardFiles } = require('./file-capture.cjs');
 
 const demo = !app.isPackaged && process.argv.includes('--demo');
 app.setName(demo ? 'Memory Demo' : 'Memory');
@@ -50,6 +51,11 @@ function notify(title, body, silent = true) {
 
 async function clipboardContent() {
   const items = await clipboard.read();
+  const fileList = items.find((item) => item.types.includes('text/uri-list'));
+  if (fileList) {
+    const paths = clipboardFiles(await (await fileList.getType('text/uri-list')).text());
+    if (paths.length) return { paths };
+  }
   const text = items.find((item) => item.types.includes('text/plain'));
   const picture = items.find((item) => item.types.includes('image/png') || item.types.includes('image/jpeg'));
   const body = text ? await (await text.getType('text/plain')).text() : '';
@@ -65,7 +71,8 @@ async function clipboardContent() {
 
 async function capture() {
   const input = await clipboardContent();
-  if (!input.body.trim() && !input.images.length) throw new Error('剪贴板没有可保存的文本或图片。');
+  if (input.paths) return captureLocalFiles(input.paths);
+  if (!input.body.trim() && !input.images.length) throw new Error('剪贴板没有可保存的文本、图片或文件。');
   return storage.run(configFile, 'create', { ...input, kind: 'capture', quick: true });
 }
 
@@ -191,13 +198,26 @@ function validateShortcut(value) {
   }
 }
 
-function libraryWork(operation, source, target) {
+function libraryWork(operation, input) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(path.join(__dirname, 'library-worker.cjs'), { workerData: { operation, source, target } });
-    worker.once('message', (result) => result.ok ? resolve() : reject(new Error(result.error)));
+    const worker = new Worker(path.join(__dirname, 'library-worker.cjs'), { workerData: { operation, ...input } });
+    worker.once('message', (result) => result.error ? reject(new Error(result.error)) : resolve(result.value));
     worker.once('error', reject);
-    worker.once('exit', (code) => { if (code) reject(new Error('备份操作未完成。')); });
+    worker.once('exit', () => reject(new Error('文件操作未完成。')));
   });
+}
+
+function captureLocalFiles(paths) {
+  const { scope } = storage.readConfig(configFile);
+  return libraryWork('captureFiles', { configFile, scope, paths });
+}
+
+async function exportFile(input) {
+  const { scope, value } = storage.run(configFile, 'file', input);
+  const destination = await dialog.showSaveDialog(window, { title: '另存文件', defaultPath: value.name });
+  if (destination.canceled || !destination.filePath) return { value: false };
+  await libraryWork('exportFile', { configFile, scope, id: input.id, target: destination.filePath });
+  return { value: true };
 }
 
 let libraryBusy = false;
@@ -211,7 +231,7 @@ async function libraryAction(operation) {
       if (result.canceled) return null;
       const stamp = new Date().toISOString().slice(0, 19).replaceAll(':', '-');
       const backup = path.join(result.filePaths[0], 'Memory-' + stamp);
-      await libraryWork('copy', config.directory, backup);
+      await libraryWork('copy', { source: config.directory, target: backup });
       return { directory: backup };
     }
     const result = await dialog.showOpenDialog(window, {
@@ -221,14 +241,14 @@ async function libraryAction(operation) {
     if (result.canceled) return null;
     let [directory] = result.filePaths;
     if (operation === 'restoreLibrary') {
-      await libraryWork('validate', directory);
+      await libraryWork('validate', { source: directory });
       const location = await dialog.showOpenDialog(window, { title: '选择恢复副本的存放目录', properties: ['openDirectory'] });
       if (location.canceled) return null;
       const target = path.join(location.filePaths[0], 'Memory-恢复-' + crypto.randomUUID().slice(0, 8));
-      await libraryWork('copy', directory, target);
+      await libraryWork('copy', { source: directory, target });
       directory = target;
     }
-    await libraryWork('validate', directory);
+    await libraryWork('validate', { source: directory });
     const current = storage.readConfig(configFile);
     storage.writeConfig(configFile, { ...current, directory, scope: crypto.randomUUID() });
     send({ type: 'switch' });
@@ -256,6 +276,11 @@ ipcMain.handle('memory:request', async (event, operation, input = {}) => {
       void processOcr();
       return result;
     }
+    if (operation === 'importFiles') {
+      const selection = await dialog.showOpenDialog(window, { title: '导入文件到收件箱', properties: ['openFile', 'multiSelections'] });
+      return selection.canceled || !selection.filePaths.length ? { value: null } : captureLocalFiles(selection.filePaths);
+    }
+    if (operation === 'exportFile') return await exportFile(input);
     if (operation === 'settings') return { value: settingsResult() };
     if (operation === 'setTheme') {
       if (!themes.has(input.theme)) throw new Error('请选择有效的外观主题。');
