@@ -1,0 +1,33 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist:win -- --publish never
+      - name: Verify packaged MCP
+        shell: pwsh
+        run: |
+          $env:MEMORY_TEST_EXECUTABLE = Join-Path $PWD 'dist/win-unpacked/Memory.exe'
+          $env:MEMORY_TEST_SCRIPT = Join-Path $PWD 'dist/win-unpacked/resources/app.asar/src/mcp.cjs'
+          node --test --test-name-pattern='MCP stdio' test/memory.test.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Memory-Windows-x64
+          path: dist/Memory-Setup-*-x64.exe
+          if-no-files-found: error
