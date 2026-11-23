@@ -2,6 +2,8 @@
 
 Windows 11 x64 本地知识库。平时用快捷键保存剪贴板，之后把收件素材整理成可复用的笔记。Codex、OpenCode 和 Claude Code 可通过本地 MCP 查询、记录和维护同一份知识库。
 
+![Memory 收件箱和截图详情，使用虚构示例](docs/memory.png)
+
 ## 开始使用
 
 1. 安装并打开 Memory。在任意窗口复制一段文字或使用 Windows 截图工具，然后按 **Ctrl+Shift+Alt+V** 保存。设置中可以更换快捷键或启用开机后在托盘启动。

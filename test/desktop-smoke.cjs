@@ -33,10 +33,9 @@ async function smoke() {
     await page.getByText('查看识别文字', { exact: true }).waitFor({ timeout: 20000 });
     await page.locator('.search-top').click();
     await page.getByRole('searchbox').fill('0x80070005');
-    await page.getByRole('searchbox').press('Enter').catch(() => {});
-    if (await page.locator('#modal').isVisible()) {
-      await page.locator('.search-results .entry').filter({ hasText: '目录权限检查' }).click();
-    }
+    await page.locator('.search-results .entry').filter({ hasText: '目录权限检查' }).waitFor();
+    await page.getByRole('searchbox').press('Enter');
+    await page.locator('#modal').waitFor({ state: 'hidden' });
     await captured.waitFor();
     await page.getByRole('button', { name: '更多操作' }).click();
     await page.getByRole('button', { name: '整理成笔记' }).click();
@@ -48,10 +47,10 @@ async function smoke() {
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByLabel('正文').fill('更新后的验证步骤');
     await page.getByRole('button', { name: '保存', exact: true }).click();
-    await page.getByText('更新后的验证步骤').waitFor();
+    await page.locator('.doc-body').getByText('更新后的验证步骤').waitFor();
     await page.getByRole('button', { name: '历史版本' }).click();
     await page.getByRole('button', { name: '恢复', exact: true }).click();
-    await page.getByText('修复 0x80070005 后验证发布成功。').waitFor();
+    await page.locator('.doc-body').getByText('修复 0x80070005 后验证发布成功。').waitFor();
     await page.getByRole('button', { name: '更多操作' }).click();
     await page.getByRole('button', { name: '移到回收站' }).click();
     await page.getByRole('button', { name: '回收站', exact: true }).click();
@@ -77,6 +76,12 @@ async function smoke() {
     }, [path.join(root, backup), root]);
     await page.getByRole('button', { name: '恢复备份' }).click();
     await page.getByText('已打开知识库副本').waitFor();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(710, 640));
+    await page.getByRole('button', { name: '显示导航' }).click();
+    await page.getByRole('button', { name: '知识库', exact: true }).click();
+    await page.locator('.entry').filter({ hasText: '发布问题的修复办法' }).click();
+    await page.getByRole('button', { name: '返回列表' }).click();
+    await page.getByRole('heading', { name: '知识库', exact: true }).waitFor();
     assert.notEqual(storage.readConfig(config).directory, library);
     assert.deepEqual(errors, []);
     console.log('Desktop flow passed: clipboard, OCR, search, organize, edit, history, trash, MCP setup, backup and restore.');

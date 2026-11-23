@@ -143,9 +143,9 @@ function settingsResult() {
     '[mcp_servers.memory.env]', ...Object.entries(env).map(([key, value]) => key + ' = ' + toml(value))
   ].join('\n');
   const powershell = (value) => "'" + value.replaceAll("'", "''") + "'";
-  const claudeCommand = ['claude mcp add --transport stdio --scope user',
+  const claudeCommand = ['claude mcp add memory --transport stdio --scope user',
     ...Object.entries(env).map(([key, value]) => '--env ' + powershell(key + '=' + value)),
-    'memory --', powershell(command), powershell(script)
+    '--', powershell(command), powershell(script)
   ].join(' ');
   return { ...config, shortcutError, autoStartSupported: process.platform === 'win32',
     snippets: { codex, claude: claudeCommand, opencode: JSON.stringify(opencode, null, 2) } };
